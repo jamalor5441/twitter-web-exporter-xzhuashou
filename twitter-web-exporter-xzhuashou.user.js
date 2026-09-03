@@ -4557,6 +4557,61 @@ async function zipStreamDownload(zipFilename, files, onProgress, rateLimit = 1e3
       return CommonModuleUI;
     }
   }
+  // ============ 限流共享状态（X抓手增强：应对 Twitter 网页速率限制） ============
+  // active    : 是否处于限流退避中
+  // resetAt   : 预计可恢复的时间戳(ms)，优先取响应头 x-rate-limit-reset，否则指数退避
+  // retryCount: 已退避次数（用于指数退避递增）
+  // waitStart : 进入限流等待的起始时间，用于硬上限熔断（避免无限等待卡死 002）
+  const rateLimitState = {
+    active: false,
+    resetAt: 0,
+    retryCount: 0,
+    waitStart: 0,
+    MAX_BACKOFF_MS: 15 * 60 * 1000,     // 单次退避上限 15 分钟
+    MAX_TOTAL_WAIT_MS: 30 * 60 * 1000,  // 累计限流等待上限 30 分钟，超时则放弃补抓并判完成
+  };
+
+  // 标记进入限流：设置状态，由 scrollToBottom 负责退避+继续补抓；不再裸丢弃该批数据
+  function markRateLimited(res, tag) {
+    const now = Date.now();
+    let resetAt = 0;
+    // 优先读取 Twitter 返回的限流恢复时间（Unix 秒，位于响应头）
+    try {
+      const h = (res && res.headers) ? res.headers : null;
+      if (h) {
+        const raw = (typeof h.get === "function")
+          ? h.get("x-rate-limit-reset")
+          : (h["x-rate-limit-reset"] || h["X-Rate-Limit-Reset"]);
+        if (raw) resetAt = parseInt(raw, 10) * 1000;
+      }
+    } catch (e) { /* 忽略响应头解析错误 */ }
+    if (!resetAt || resetAt <= now) {
+      // 无精确恢复时间则指数退避：60s * 2^retryCount，封顶 MAX_BACKOFF_MS
+      const backoff = Math.min(60 * 1000 * Math.pow(2, rateLimitState.retryCount), rateLimitState.MAX_BACKOFF_MS);
+      resetAt = now + backoff;
+    }
+    rateLimitState.active = true;
+    rateLimitState.resetAt = resetAt;
+    if (!rateLimitState.waitStart) rateLimitState.waitStart = now;
+    logger.warn(`${tag}: 检测到速率限制，将在 ${Math.ceil((resetAt - now) / 1000)}s 后继续补抓`);
+  }
+
+  // 限流退避期间把按钮文本更新为「限流中…重试(剩余Ns)」，退避结束恢复为滚动中文本
+  // 返回计时器 id，调用方在 loadAllMedia 结束后 clearInterval
+  function startRateLimitButtonObserver(button, scrollingText) {
+    return setInterval(() => {
+      if (rateLimitState.active) {
+        const remaining = Math.max(0, Math.ceil((rateLimitState.resetAt - Date.now()) / 1000));
+        button.textContent = `限流中…重试(剩余${remaining}s)`;
+      } else if (button.textContent && button.textContent.indexOf("限流中") === 0) {
+        button.textContent = scrollingText;
+      }
+    }, 1000);
+  }
+  function stopRateLimitButtonObserver(timer) {
+    if (timer) clearInterval(timer);
+  }
+
   const UserMediaInterceptor = (req, res, ext) => {
     // 更新正则表达式以匹配 Twitter 新 API 端点
     // 匹配 UserMedia, UserPhotoTimeline, UserVideoTimeline
@@ -4566,8 +4621,8 @@ async function zipStreamDownload(zipFilename, files, onProgress, rateLimit = 1e3
 
     // 检查是否是速率限制错误
     if (res.responseText && res.responseText.includes("Rate limit exceeded")) {
-      logger.warn("UserMedia: Rate limit exceeded, skipping this request");
-      return;
+      markRateLimited(res, "UserMedia");
+      return; // 无数据可解析，但已置限流状态；scrollToBottom 会退避后继续补抓
     }
 
     try {
@@ -4620,8 +4675,8 @@ async function zipStreamDownload(zipFilename, files, onProgress, rateLimit = 1e3
 
     // 检查是否是速率限制错误
     if (res.responseText && res.responseText.includes("Rate limit exceeded")) {
-      logger.warn("UserTweets: Rate limit exceeded, skipping this request");
-      return;
+      markRateLimited(res, "UserTweets");
+      return; // 无数据可解析，但已置限流状态；scrollToBottom 会退避后继续补抓
     }
 
     try {
@@ -4781,6 +4836,31 @@ async function zipStreamDownload(zipFilename, files, onProgress, rateLimit = 1e3
             const maxAttempts = appOptionsManager.get("scrollMaxAttempts", DEFAULT_APP_OPTIONS.scrollMaxAttempts); // 最大尝试次数，可在设置页修改
 
             const scrollInterval = setInterval(() => {
+                // ===== 限流退避：撞限流期间暂停滚动、不累加高度不变计数、不判完成 =====
+                if (rateLimitState.active) {
+                    // 累计等待硬上限：避免永久卡死（例如限流迟迟不恢复导致 002 无限等待）
+                    if (Date.now() - rateLimitState.waitStart > rateLimitState.MAX_TOTAL_WAIT_MS) {
+                        logger.warn("限流累计等待超时，放弃补抓并结束滚动");
+                        rateLimitState.active = false;
+                        clearInterval(scrollInterval);
+                        resolve();
+                        return;
+                    }
+                    const remaining = Math.max(0, Math.ceil((rateLimitState.resetAt - Date.now()) / 1000));
+                    if (remaining <= 0) {
+                        // 退避结束：清除限流状态、重置高度判定，继续滚动补抓
+                        rateLimitState.active = false;
+                        rateLimitState.retryCount = rateLimitState.retryCount + 1;
+                        rateLimitState.waitStart = 0;
+                        sameHeightCount = 0;
+                        lastHeight = document.body.scrollHeight;
+                        logger.info(`限流退避结束，继续补抓（第 ${rateLimitState.retryCount} 次）`);
+                    } else {
+                        // 暂停滚动、不累加 sameHeightCount、不 resolve，等待退避结束
+                        return;
+                    }
+                }
+
                 // 滚动到页面底部
                 window.scrollTo(0, document.body.scrollHeight);
 
@@ -5160,6 +5240,12 @@ async function zipStreamDownload(zipFilename, files, onProgress, rateLimit = 1e3
 
                 // 定期检查并下载新捕获的内容
                 const downloadInterval = setInterval(async () => {
+                    // 限流中：显示退避状态，不让 002 误判为完成；等待 scrollToBottom 补抓
+                    if (rateLimitState.active) {
+                        const remaining = Math.max(0, Math.ceil((rateLimitState.resetAt - Date.now()) / 1000));
+                        loadingButton.textContent = `限流中…重试(剩余${remaining}s)`;
+                        return;
+                    }
                     if (!isScrolling || isDownloading) {
                         return;
                     }
@@ -5315,7 +5401,9 @@ async function zipStreamDownload(zipFilename, files, onProgress, rateLimit = 1e3
 
                 // 自动滚动到底部，触发并捕获全部 UserTweets 数据
                 this.textContent = '滚动加载中...';
+                const rlObserver = startRateLimitButtonObserver(this, '滚动加载中...');
                 await loadAllMedia();
+                stopRateLimitButtonObserver(rlObserver);
 
                 // 读取 UserTweetsModule 捕获的全部推文
                 this.textContent = '下载中...';
@@ -5347,7 +5435,7 @@ async function zipStreamDownload(zipFilename, files, onProgress, rateLimit = 1e3
                 };
                 await zipStreamDownload(`twitter-${username}-tweets-no-retweet-${Date.now()}-media.zip`, mediaList, onProgress);
 
-                this.textContent = originalText;
+                this.textContent = '下载完成!';
                 this.disabled = false;
             } catch (err) {
                 console.error('[UserTweets下载-原创] 下载推文媒体失败:', err);
