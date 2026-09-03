@@ -4,7 +4,7 @@
 // @name:zh-TW         Twitter 資料匯出工具 vjamalor 增強版
 // @name:ja            Twitter データエクスポーター vjamalor 改良版
 // @namespace          https://github.com/jamalor5441
-// @version            1.3.5 vjamalor-modified
+// @version            1.3.7 xzhuashou
 // @author             prin <hi@prin.studio>
 // @description        Export tweets, bookmarks, lists and much more to JSON/CSV/HTML from Twitter(X) web app.
 // @description:zh-CN  从 Twitter(X) 网页版导出推文、书签、列表等各种数据，支持导出 JSON/CSV/HTML。
@@ -30,7 +30,8 @@
 // @grant              GM_registerMenuCommand
 // @grant              unsafeWindow
 // @run-at             document-start
-// @downloadURL https://update.greasyfork.org/scripts/492218/Twitter%20Web%20Exporter.user.js
+// @updateURL          https://raw.githubusercontent.com/jamalor5441/twitter-web-exporter-xzhuashou/main/twitter-web-exporter-xzhuashou.user.js
+// @downloadURL        https://raw.githubusercontent.com/jamalor5441/twitter-web-exporter-xzhuashou/main/twitter-web-exporter-xzhuashou.user.js
 // ==/UserScript==
 
 /*
