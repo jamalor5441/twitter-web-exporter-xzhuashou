@@ -1,0 +1,29 @@
+Twitter Web Exporter — X抓手 修改版
+派生与署名声明 (Derived Work & Attribution)
+==================================================
+
+本仓库中的用户脚本是 Twitter Web Exporter 的修改版本，其派生链如下：
+
+1. 原版 (upstream)
+   - 仓库 : https://github.com/prinsss/twitter-web-exporter
+   - 作者 : prin <hi@prin.studio>
+   - 许可 : MIT License  (C) 2023 prin
+
+2. 改版 (intermediate fork)
+   - 仓库 : https://github.com/jamalor5441/twitter-web-exporter-modified
+   - 作者 : jamalor5441
+   - 说明 : 基于原版的修改（本脚本元数据中的 @namespace / @homepage 即指向此处）
+
+3. 本版 (this repository)
+   - 项目 : X抓手 (X-Claw)
+   - 作者 : X抓手
+   - 说明 : 在改版基础上，针对 X抓手 批量下载流水线做的适配与修改
+            （下载器集成、限流处理等，详见脚本内「X抓手 项目备注」注释与 commit 历史）
+
+--------------------------------------------------
+许可与署名 (License & Attribution)
+--------------------------------------------------
+- 本修改版在保留原始 MIT 许可证（见 LICENSE 文件）及原作者署名的前提下发布。
+- 原始 MIT 许可证全文见本仓库 LICENSE 文件，未作删改。
+- 本修改版与 prinsss / jamalor5441 无官方隶属关系。
+- 使用、修改、再分发本脚本时，须继续包含上述版权声明与许可声明。
