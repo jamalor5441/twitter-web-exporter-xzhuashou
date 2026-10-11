@@ -28,7 +28,7 @@
 
 - 与 `002start_chrome_遍历然后下载.bat` 流水线对接，点击「下载这个用户推文媒体」按钮即触发整库导出；
 - 基于 `export_count`（存于浏览器 IndexedDB）的**增量去重**：仅下载从未导出过的推文，作者上云删本地后再次遍历也只下新增；
-- 文件命名遵循 X抓手 项目规范（来自脚本内 `DEFAULT_FILENAME_PATTERN`），与本地 `chrome_downloads` / `003` 整理器对齐。
+- 文件命名遵循 X抓手 项目规范（来自脚本内 `DEFAULT_FILENAME_PATTERN`），与本地 `《downloads》` / `003` 整理器对齐。
 
 > 具体代码改动请以脚本内「X抓手 项目备注」注释与 [commit 历史](../../commits) 为准。
 

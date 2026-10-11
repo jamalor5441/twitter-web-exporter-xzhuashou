@@ -4,7 +4,7 @@
 // @name:zh-TW         Twitter 資料匯出工具 vjamalor 增強版
 // @name:ja            Twitter データエクスポーター vjamalor 改良版
 // @namespace          https://github.com/jamalor5441
-// @version            1.3.7 xzhuashou
+// @version            1.3.8 xzhuashou
 // @author             prin <hi@prin.studio>
 // @description        Export tweets, bookmarks, lists and much more to JSON/CSV/HTML from Twitter(X) web app.
 // @description:zh-CN  从 Twitter(X) 网页版导出推文、书签、列表等各种数据，支持导出 JSON/CSV/HTML。
@@ -4569,6 +4569,11 @@ async function zipStreamDownload(zipFilename, files, onProgress, rateLimit = 1e3
     waitStart: 0,
     MAX_BACKOFF_MS: 15 * 60 * 1000,     // 单次退避上限 15 分钟
     MAX_TOTAL_WAIT_MS: 30 * 60 * 1000,  // 累计限流等待上限 30 分钟，超时则放弃补抓并判完成
+    // —— X抓手增强：X 全局出错页「出错了。请尝试重新加载。」退避后自动点「重试」 ——
+    errorMode: false,        // 当前退避是否由出错页触发（区别于真正的 API 限流）
+    errorRetryButton: null,  // 出错页内的「重试」按钮引用
+    errorRetryCount: 0,      // 出错页退避次数（指数退避，独立于 retryCount）
+    errorLastClickAt: 0,     // 上次点击「重试」的时间戳，用于冷却避免狂点
   };
 
   // 标记进入限流：设置状态，由 scrollToBottom 负责退避+继续补抓；不再裸丢弃该批数据
@@ -4602,8 +4607,12 @@ async function zipStreamDownload(zipFilename, files, onProgress, rateLimit = 1e3
     return setInterval(() => {
       if (rateLimitState.active) {
         const remaining = Math.max(0, Math.ceil((rateLimitState.resetAt - Date.now()) / 1000));
-        button.textContent = `限流中…重试(剩余${remaining}s)`;
-      } else if (button.textContent && button.textContent.indexOf("限流中") === 0) {
+        if (rateLimitState.errorMode) {
+          button.textContent = `出错页退避…重试(剩余${remaining}s)`;
+        } else {
+          button.textContent = `限流中…重试(剩余${remaining}s)`;
+        }
+      } else if (button.textContent && (button.textContent.indexOf("限流中") === 0 || button.textContent.indexOf("出错页退避") === 0)) {
         button.textContent = scrollingText;
       }
     }, 1000);
@@ -4848,6 +4857,10 @@ async function zipStreamDownload(zipFilename, files, onProgress, rateLimit = 1e3
                     }
                     const remaining = Math.max(0, Math.ceil((rateLimitState.resetAt - Date.now()) / 1000));
                     if (remaining <= 0) {
+                        if (rateLimitState.errorMode) {
+                            // 出错页退避结束：保持暂停，交给出错页 watchdog 点击「重试」并在出错页消失后再恢复
+                            return;
+                        }
                         // 退避结束：清除限流状态、重置高度判定，继续滚动补抓
                         rateLimitState.active = false;
                         rateLimitState.retryCount = rateLimitState.retryCount + 1;
@@ -5464,6 +5477,74 @@ async function zipStreamDownload(zipFilename, files, onProgress, rateLimit = 1e3
             };
         })();
     }
+
+    // ============ X 出错页自动退避 + 重试（X抓手增强） ============
+    // 检测 X 全局出错页「出错了。请尝试重新加载。」：出现即按限流退避（暂停滚动/显示剩余秒），
+    // 退避到点自动点击「重试」按钮重载，待出错页消失后恢复补抓。复用 rateLimitState 的暂停与硬上限。
+    function findXErrorRetryButton() {
+      const spans = document.querySelectorAll("span");
+      let errSpan = null;
+      for (const s of spans) {
+        if (s.textContent && s.textContent.trim() === "出错了。请尝试重新加载。") { errSpan = s; break; }
+      }
+      if (!errSpan) return null;
+      // 文案在外层灰色 div 内；灰色 div 的父节点是出错容器；容器内的「重试」按钮即目标
+      const container = errSpan.parentElement && errSpan.parentElement.parentElement;
+      if (container) {
+        const btns = container.querySelectorAll("button");
+        for (const b of btns) {
+          if (b.textContent && b.textContent.indexOf("重试") !== -1) return b;
+        }
+      }
+      // 兜底：文档内任意含「重试」文字的按钮
+      const allBtns = document.querySelectorAll("button");
+      for (const b of allBtns) {
+        if (b.textContent && b.textContent.indexOf("重试") !== -1) return b;
+      }
+      return null;
+    }
+
+    function startErrorPageWatchdog() {
+      setInterval(() => {
+        const retryBtn = findXErrorRetryButton();
+        const errPresent = !!retryBtn;
+        if (errPresent && !rateLimitState.active) {
+          // 进入出错页退避（当作限流处理）
+          const now = Date.now();
+          const backoff = Math.min(60 * 1000 * Math.pow(2, rateLimitState.errorRetryCount), rateLimitState.MAX_BACKOFF_MS);
+          rateLimitState.active = true;
+          rateLimitState.errorMode = true;
+          rateLimitState.resetAt = now + backoff;
+          if (!rateLimitState.waitStart) rateLimitState.waitStart = now;
+          rateLimitState.errorRetryButton = retryBtn;
+          rateLimitState.errorLastClickAt = 0;
+          logger.warn(`检测到 X 出错页，按退避处理，将在 ${Math.ceil(backoff / 1000)}s 后点击「重试」`);
+        } else if (errPresent && rateLimitState.active && rateLimitState.errorMode) {
+          // 退避中：到点后点击「重试」（30s 冷却，给重试生效时间，避免疯狂连点）
+          const now = Date.now();
+          if (now >= rateLimitState.resetAt && now - (rateLimitState.errorLastClickAt || 0) > 30000) {
+            const btn = rateLimitState.errorRetryButton || retryBtn;
+            if (btn) {
+              try { btn.click(); logger.info("出错页退避结束，已点击「重试」按钮，等待页面恢复"); }
+              catch (e) { /* 忽略点击异常 */ }
+              rateLimitState.errorRetryButton = null;
+              rateLimitState.errorLastClickAt = now;
+            }
+          }
+        } else if (!errPresent && rateLimitState.active && rateLimitState.errorMode) {
+          // 出错页已消失（重试成功）：恢复补抓
+          rateLimitState.active = false;
+          rateLimitState.errorMode = false;
+          rateLimitState.errorRetryCount = rateLimitState.errorRetryCount + 1;
+          rateLimitState.waitStart = 0;
+          rateLimitState.errorRetryButton = null;
+          rateLimitState.errorLastClickAt = 0;
+          logger.info(`出错页已恢复，继续补抓（第 ${rateLimitState.errorRetryCount} 次）`);
+        }
+      }, 1000);
+    }
+
+    startErrorPageWatchdog();
 
     // 页面加载完成后添加按钮
     if (document.readyState === 'loading') {
